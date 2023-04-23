@@ -1,0 +1,16 @@
+name: "CHANGELOG to Slack"
+description: "Post the latest release from your CHANGELOG to a Slack channel"
+inputs:
+    slack-webhook:
+        description: "Slack webhook url"
+        required: true
+    app-name:
+        description: "Name of the app that was released"
+        required: true
+    changelog-file:
+        description: "The file path to your 'changelog' file. Defauls: CHANGELOG.md"
+    environment:
+        description: "The environment of the latest deployment. Defaults: -empty-"
+runs:
+    using: "node16"
+    main: "dist/index.js"
