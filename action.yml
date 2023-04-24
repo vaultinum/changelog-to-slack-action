@@ -11,6 +11,8 @@ inputs:
         description: "The file path to your 'changelog' file. Defauls: CHANGELOG.md"
     environment:
         description: "The environment of the latest deployment. Defaults: -empty-"
+    jira-host:
+        description: "The jira host used by the application"
 runs:
     using: "node16"
     main: "dist/index.js"
