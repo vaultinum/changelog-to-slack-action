@@ -9387,7 +9387,7 @@ function getShortStats(fromTag, toTag) {
     return null;
 }
 function getChangelogDiff(filePath) {
-    const output = execSync(`git diff HEAD~2 HEAD -- ${filePath}`).toString();
+    const output = execSync(`git diff HEAD~1 HEAD -- ${filePath}`).toString();
     const newLines = output
         .split("\n")
         .filter((line) => line.startsWith("+"))
@@ -9478,7 +9478,7 @@ function postReleaseToSlack(hookURL, appName, environment, releases, shortStats)
                 type: "header",
                 text: {
                     type: "plain_text",
-                    text: `${environment ? `*${environment}* | ` : ""}${appName}}`,
+                    text: `${environment ? `${environment} | ` : ""}${appName}`,
                     emoji: true,
                 },
             },
