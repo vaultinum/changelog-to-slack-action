@@ -9511,7 +9511,7 @@ function postReleaseToSlack(hookURL, appName, environment, releases, shortStats)
             type: "section",
             text: {
                 type: "mrkdwn",
-                text: `*:package: ${features.length} ${plural("Feature", features.length)}*`,
+                text: `*:sparkles: ${features.length} ${plural("Feature", features.length)}*`,
             },
         });
         message.blocks.push({
@@ -9521,7 +9521,7 @@ function postReleaseToSlack(hookURL, appName, environment, releases, shortStats)
                 text: features
                     .map(({ component, message, changeUrl, jiraTicket }) => {
                         const formattedMessage = jiraTicket ? message.replace(jiraTicket, `<${JIRA_HOST}/browse/${jiraTicket}|${jiraTicket}>`) : message;
-                        return `:black_small_square: *${component}:* ${formattedMessage} (<${changeUrl}|view changes>)`;
+                        return `- *${component}:* ${formattedMessage} (<${changeUrl}|view changes>)`;
                     })
                     .join("\n"),
             },
@@ -9535,7 +9535,7 @@ function postReleaseToSlack(hookURL, appName, environment, releases, shortStats)
             type: "section",
             text: {
                 type: "mrkdwn",
-                text: `*:ladybug: ${bugfixes.length} ${plural("Bugfixe", bugfixes.length)}*`,
+                text: `*:bug: ${bugfixes.length} ${plural("Bugfixe", bugfixes.length)}*`,
             },
         });
         message.blocks.push({
@@ -9545,7 +9545,7 @@ function postReleaseToSlack(hookURL, appName, environment, releases, shortStats)
                 text: bugfixes
                     .map(({ component, message, changeUrl, jiraTicket }) => {
                         const formattedMessage = jiraTicket ? message.replace(jiraTicket, `<${JIRA_HOST}/browse/${jiraTicket}|${jiraTicket}>`) : message;
-                        return `:black_small_square: *${component}:* ${formattedMessage} (<${changeUrl}|View change>)`;
+                        return `- *${component}:* ${formattedMessage} (<${changeUrl}|View change>)`;
                     })
                     .join("\n"),
             },
@@ -9570,10 +9570,7 @@ function postReleaseToSlack(hookURL, appName, environment, releases, shortStats)
             type: "context",
             elements: [
                 {
-                    text: `:page_facing_up: ${fileChanged} ${plural("file", fileChanged)} changed | :pencil2: ${insertions} ${plural(
-                        "line",
-                        insertions
-                    )} added | :wastebasket: ${deletions} ${plural("lines", deletions)} removed`,
+                    text: `:page_facing_up: ${fileChanged} ${plural("file", fileChanged)} changed | :heavy_plus_sign: ${insertions} :heavy_minus_sign: ${deletions} ${plural("line", insertions + deletions)}`,
                     type: "mrkdwn",
                 },
             ],
