@@ -13,6 +13,9 @@ inputs:
         description: "The environment of the latest deployment. Defaults: -empty-"
     jira-host:
         description: "The jira host used by the application"
+    deployed-version:
+        description: "The version that was deployed"
+        required: true
 runs:
     using: "node16"
     main: "dist/index.js"
