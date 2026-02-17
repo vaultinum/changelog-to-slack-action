@@ -1,5 +1,4 @@
 async function runTest(scenario) {
-    // Mock @actions/core
     const MockCore = require("./mock-core");
     const mockCore = new MockCore({
         "slack-webhook": process.env.SLACK_WEBHOOK_URL,

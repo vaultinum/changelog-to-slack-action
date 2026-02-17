@@ -173,7 +173,6 @@ async function handleGitHubSource() {
     const JIRA_HOST = core.getInput("jira-host") || "";
 
     try {
-        console.log(`Fetching GitHub releases between ${process.env.PREVIOUS_VERSION} and ${process.env.NEW_VERSION}...`);
         const releases = await getReleasesBetweenVersions();
         console.log(`Found ${releases.length} release(s): ${releases.map(r => r.tag_name).join(", ")}`);
 

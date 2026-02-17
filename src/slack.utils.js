@@ -19,6 +19,63 @@ function formatJiraTicket(message, jiraHost) {
     return message;
 }
 
+function truncateItemsList(items, jiraHost, maxLength = 1200) {
+    const formattedItems = items.map(({ component, message, changeUrl, author }) => {
+        const formattedMessage = formatJiraTicket(message, jiraHost);
+        return `- *${component}:* ${formattedMessage} ${author ? `(@${author})` : ""} (<${changeUrl}|View>)`;
+    });
+
+    let currentLength = 0;
+    const truncatedItems = [];
+    let truncated = false;
+
+    for (const item of formattedItems) {
+        if (currentLength + item.length + 1 > maxLength) {
+            // +1 for newline
+            truncated = true;
+            break;
+        }
+        truncatedItems.push(item);
+        currentLength += item.length + 1;
+    }
+
+    const result = truncatedItems.join("\n");
+    if (truncated) {
+        const remaining = items.length - truncatedItems.length;
+        return result + `\n... and ${remaining} more item${remaining > 1 ? "s" : ""}`;
+    }
+
+    return result;
+}
+
+function checkMessageSize(message, maxSize = 2800) {
+    const messageText = JSON.stringify(message);
+    if (messageText.length > maxSize) {
+        // If message is still too long, remove some blocks starting from the end
+        const blocks = [...message.blocks];
+
+        while (blocks.length > 3 && JSON.stringify({ blocks }).length > maxSize) {
+            // Keep header, divider, and main announcement, remove from the end
+            blocks.pop();
+        }
+
+        // Add truncation notice
+        blocks.push({
+            type: "context",
+            elements: [
+                {
+                    type: "mrkdwn",
+                    text: ":warning: _Message truncated due to length limit_"
+                }
+            ]
+        });
+
+        return { blocks };
+    }
+
+    return message;
+}
+
 function buildSlackMessage(appName, environment, releases, shortStats, jiraHost) {
     const bugfixes = releases.reduce((acc, release) => [...acc, ...release.bugfixes], []).sort((a, b) => a.component.localeCompare(b.component));
     const features = releases.reduce((acc, release) => [...acc, ...release.features], []).sort((a, b) => a.component.localeCompare(b.component));
@@ -70,12 +127,7 @@ function buildSlackMessage(appName, environment, releases, shortStats, jiraHost)
             type: "section",
             text: {
                 type: "mrkdwn",
-                text: features
-                    .map(({ component, message, changeUrl, author }) => {
-                        const formattedMessage = formatJiraTicket(message, jiraHost);
-                        return `- *${component}:* ${formattedMessage} ${author ? `(@${author})` : ""} (<${changeUrl}|View>)`;
-                    })
-                    .join("\n")
+                text: truncateItemsList(features, jiraHost)
             }
         });
     }
@@ -95,12 +147,7 @@ function buildSlackMessage(appName, environment, releases, shortStats, jiraHost)
             type: "section",
             text: {
                 type: "mrkdwn",
-                text: bugfixes
-                    .map(({ component, message, changeUrl, author }) => {
-                        const formattedMessage = formatJiraTicket(message, jiraHost);
-                        return `- *${component}:* ${formattedMessage} ${author ? `(@${author})` : ""} (<${changeUrl}|View>)`;
-                    })
-                    .join("\n")
+                text: truncateItemsList(bugfixes, jiraHost)
             }
         });
     }
@@ -131,7 +178,7 @@ function buildSlackMessage(appName, environment, releases, shortStats, jiraHost)
         });
     }
 
-    return message;
+    return checkMessageSize(message);
 }
 
 function addJiraTicketInfo(changeItem, message) {
@@ -160,6 +207,8 @@ module.exports = {
     plural,
     JIRA_TICKET_PATTERN,
     formatJiraTicket,
+    truncateItemsList,
+    checkMessageSize,
     buildSlackMessage,
     postReleaseToSlack,
     addJiraTicketInfo

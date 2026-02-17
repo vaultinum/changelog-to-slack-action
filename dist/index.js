@@ -4979,6 +4979,589 @@ exports["default"] = _default;
 
 /***/ }),
 
+/***/ 755:
+/***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
+
+const core = __nccwpck_require__(2186);
+const { execSync } = __nccwpck_require__(2081);
+const { postReleaseToSlack, addJiraTicketInfo } = __nccwpck_require__(1523);
+
+function getShortStats(fromTag, toTag) {
+    const output = execSync(`git diff --shortstat ${fromTag}...${toTag}`).toString();
+    console.log(`ShortStat: ${output}`);
+    const shortStatPattern = /(?<fileChanged>\d+) files? changed, (?<insertions>\d+) insertions\(\+\), (?<deletions>\d+)/;
+    const statMatch = shortStatPattern.exec(output);
+    if (statMatch) {
+        return {
+            fileChanged: statMatch.groups.fileChanged,
+            insertions: statMatch.groups.insertions,
+            deletions: statMatch.groups.deletions
+        };
+    }
+    return null;
+}
+
+function getChangelogDiff(filePath) {
+    const output = execSync(`git diff HEAD~1 HEAD -- ${filePath}`).toString();
+    const newLines = output
+        .split("\n")
+        .filter(line => line.startsWith("+"))
+        .map(line => line.substring(1));
+    return newLines.join("\n");
+}
+
+function parseChangelogReleases(changeLogContent) {
+    const lines = changeLogContent.split("\n");
+    // All releases data
+    const releases = [];
+    // Current release data
+    let features = [];
+    let bugfixes = [];
+    let version = null;
+    let releaseUrl = null;
+    let releaseDate = null;
+    let changeType = null;
+
+    const flushRelease = () => {
+        if (!version) {
+            return;
+        }
+        // Extract version tags from url
+        const [previousVersionTag, versionTag] = releaseUrl.split("/").pop().split("...");
+        releases.push({
+            previousVersionTag,
+            versionTag,
+            version,
+            releaseUrl,
+            releaseDate,
+            features,
+            bugfixes
+        });
+        features = [];
+        bugfixes = [];
+        version = null;
+        releaseUrl = null;
+        releaseDate = null;
+        changeType = null;
+    };
+
+    for (const line of lines) {
+        const releaseStartPattern = /###? \[(?<version>\d+\.\d+\.\d+)\]\((?<releaseUrl>https:\/\/[\w\./-]+)\) \((?<releaseDate>\d{4}-\d{2}-\d{2})\)/;
+        const releaseStartMatch = releaseStartPattern.exec(line);
+        if (releaseStartMatch) {
+            flushRelease();
+            version = releaseStartMatch.groups.version;
+            releaseUrl = releaseStartMatch.groups.releaseUrl;
+            releaseDate = releaseStartMatch.groups.releaseDate;
+        } else if (line.startsWith("### Features")) {
+            changeType = "features";
+        } else if (line.startsWith("### Bug Fixes")) {
+            changeType = "bugfixes";
+        } else if (line.startsWith("* ")) {
+            const changePattern = /\* (\**)?(?<component>[\w-]+)?(:\*\* )?(?<message>.+)\(\[\w{7}\]\((?<changeUrl>https:\/\/[\w\./-]+)\)\)/;
+            const changeMatch = changePattern.exec(line);
+            let changeList = changeType === "features" ? features : changeType === "bugfixes" ? bugfixes : null;
+            // Avoid adding the same change info twice (can happen when change is done on multiple commits)
+            if (
+                changeList &&
+                !changeList.some(feature => feature.component === changeMatch.groups.component && feature.message === changeMatch.groups.message)
+            ) {
+                let change = { ...changeMatch.groups };
+                change = addJiraTicketInfo(change, changeMatch.groups.message);
+                changeList.push(change);
+            }
+        }
+    }
+    flushRelease();
+    return releases;
+}
+
+async function handleFileSource() {
+    const SLACK_WEBHOOK_URL = core.getInput("slack-webhook");
+    const APP_NAME = core.getInput("app-name") || "Unknown application";
+    const CHANGELOG_FILE = core.getInput("changelog-file") || "CHANGELOG.md";
+    const ENVIRONMENT = core.getInput("environment");
+    const JIRA_HOST = core.getInput("jira-host") || "";
+
+    try {
+        console.log(`Fetching changes for file '${CHANGELOG_FILE}'...`);
+        const changelogAddedContent = getChangelogDiff(CHANGELOG_FILE);
+        console.log("Parsing latest release...");
+        const releases = parseChangelogReleases(changelogAddedContent);
+        if (releases.length) {
+            const fromTag = releases[releases.length - 1].previousVersionTag;
+            const toTag = releases[0].versionTag;
+            console.log(`Fetching git shortstats for tags: fromTag=${fromTag}, toTag=${toTag}...`);
+            const shortStats = getShortStats(fromTag, toTag);
+            console.log("Posting to Slack latest release info...");
+            await postReleaseToSlack(SLACK_WEBHOOK_URL, APP_NAME, ENVIRONMENT, releases, shortStats, JIRA_HOST);
+        } else {
+            core.setFailed("No release found in changelog file");
+        }
+    } catch (error) {
+        core.setFailed(error.message);
+    }
+}
+
+module.exports = { handleFileSource };
+
+
+/***/ }),
+
+/***/ 6689:
+/***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
+
+const core = __nccwpck_require__(2186);
+const axios = __nccwpck_require__(8757);
+const { postReleaseToSlack, addJiraTicketInfo } = __nccwpck_require__(1523);
+
+async function getReleasesBetweenVersions() {
+    const repo = process.env.GITHUB_REPOSITORY;
+    const githubToken = core.getInput("github-token");
+    const newTag = core.getInput("new-version");
+    const previousTag = core.getInput("previous-version");
+
+    if (!githubToken) {
+        throw new Error("github-token input is required when using github changelog source");
+    }
+
+    if (!repo) {
+        throw new Error("GITHUB_REPOSITORY environment variable not found");
+    }
+
+    if (!newTag) {
+        throw new Error("new-tag input is required");
+    }
+
+    if (!previousTag) {
+        throw new Error("previous-tag input is required");
+    }
+
+    const newVersion = newTag.startsWith("v") ? newTag : `v${newTag}`;
+    const previousVersion = previousTag.startsWith("v") ? previousTag : `v${previousTag}`;
+
+    try {
+        let allReleases = [];
+        let page = 1;
+        let hasNextPage = true;
+        let newVersionIndex = -1;
+        let previousVersionIndex = -1;
+
+        while (hasNextPage && (newVersionIndex === -1 || previousVersionIndex === -1)) {
+            const response = await axios({
+                method: "get",
+                url: `https://api.github.com/repos/${repo}/releases`,
+                headers: { Authorization: `token ${githubToken}`, Accept: "application/vnd.github.v3+json" },
+                params: { page: page, per_page: 100 }
+            });
+
+            const releases = response.data;
+
+            if (releases.length === 0) {
+                hasNextPage = false;
+                break;
+            }
+
+            const currentStartIndex = allReleases.length;
+            allReleases = allReleases.concat(releases);
+
+            if (newVersionIndex === -1) {
+                const localNewIndex = releases.findIndex(release => release.tag_name === newVersion);
+                if (localNewIndex !== -1) {
+                    newVersionIndex = currentStartIndex + localNewIndex;
+                }
+            }
+
+            if (previousVersionIndex === -1) {
+                const localPreviousIndex = releases.findIndex(release => release.tag_name === previousVersion);
+                if (localPreviousIndex !== -1) {
+                    previousVersionIndex = currentStartIndex + localPreviousIndex;
+                }
+            }
+
+            hasNextPage = releases.length === 100;
+            page++;
+        }
+
+        if (newVersionIndex === -1) {
+            throw new Error(`Release with tag ${newVersion} not found`);
+        }
+
+        if (previousVersionIndex === -1) {
+            throw new Error(`Release with tag ${previousVersion} not found`);
+        }
+
+        const releasesBetween = allReleases.slice(newVersionIndex, previousVersionIndex);
+
+        if (releasesBetween.length === 0) {
+            throw new Error(`No releases found between ${previousVersion} and ${newVersion}`);
+        }
+
+        console.log(`Found ${releasesBetween.length} release(s) between ${previousVersion} and ${newVersion}`);
+        return releasesBetween;
+    } catch (error) {
+        if (error.response && error.response.status === 404) {
+            throw new Error("Repository not found or no releases available");
+        }
+        throw error;
+    }
+}
+
+async function parseGitHubReleases(releases) {
+    const parsedReleases = [];
+
+    for (const release of releases) {
+        const version = release.tag_name;
+        const releaseDate = new Date(release.published_at).toISOString().split("T")[0];
+        const releaseUrl = release.html_url;
+        const body = release.body || "";
+
+        const features = [];
+        const bugfixes = [];
+
+        const lines = body.split("\n");
+        let currentSection = null;
+
+        for (const line of lines) {
+            const trimmedLine = line.trim();
+
+            if (!trimmedLine.startsWith("-") && !trimmedLine.startsWith("*")) {
+                continue;
+            }
+
+            const itemText = trimmedLine.substring(1).trim();
+
+            if (itemText.includes("Full Changelog")) {
+                continue;
+            }
+
+            if (trimmedLine.toLowerCase().startsWith("feat")) {
+                currentSection = "features";
+            } else if (trimmedLine.toLowerCase().startsWith("fix")) {
+                currentSection = "bugfixes";
+            }
+
+            const changePattern = /(feat|fix)(\((?<component>[\w-]+)\))?: (?<message>.+?) by @(?<author>.*) in (?<changeUrl>https:\/\/[\w\.\/-]+)/;
+            const parsedLine = changePattern.exec(itemText);
+
+            let changeItem = {
+                component: parsedLine?.groups?.component || "general",
+                message: parsedLine?.groups?.message || itemText,
+                changeUrl: parsedLine?.groups?.changeUrl || releaseUrl,
+                author: parsedLine?.groups?.author || "unknown"
+            };
+
+            changeItem = addJiraTicketInfo(changeItem, itemText);
+
+            if (currentSection === "features") {
+                features.push(changeItem);
+            } else if (currentSection === "bugfixes") {
+                bugfixes.push(changeItem);
+            } else {
+                if (itemText.toLowerCase().includes("fix") || itemText.toLowerCase().includes("bug")) {
+                    bugfixes.push(changeItem);
+                } else {
+                    features.push(changeItem);
+                }
+            }
+        }
+
+        parsedReleases.push({
+            versionTag: version,
+            version,
+            releaseUrl,
+            releaseDate,
+            features,
+            bugfixes
+        });
+    }
+
+    return parsedReleases;
+}
+
+async function handleGitHubSource() {
+    const SLACK_WEBHOOK_URL = core.getInput("slack-webhook");
+    const APP_NAME = core.getInput("app-name") || "Unknown application";
+    const ENVIRONMENT = core.getInput("environment");
+    const JIRA_HOST = core.getInput("jira-host") || "";
+
+    try {
+        console.log(`Fetching GitHub releases between ${process.env.PREVIOUS_VERSION} and ${process.env.NEW_VERSION}...`);
+        const releases = await getReleasesBetweenVersions();
+        console.log(`Found ${releases.length} release(s): ${releases.map(r => r.tag_name).join(", ")}`);
+
+        console.log("Parsing GitHub releases...");
+        const parsedReleases = await parseGitHubReleases(releases);
+
+        console.log("Posting to Slack release info...");
+        await postReleaseToSlack(SLACK_WEBHOOK_URL, APP_NAME, ENVIRONMENT, parsedReleases, null, JIRA_HOST);
+    } catch (error) {
+        core.setFailed(error.message);
+    }
+}
+
+module.exports = { handleGitHubSource };
+
+
+/***/ }),
+
+/***/ 4351:
+/***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
+
+const core = __nccwpck_require__(2186);
+const { handleFileSource } = __nccwpck_require__(755);
+const { handleGitHubSource } = __nccwpck_require__(6689);
+
+async function main() {
+    const changelogSource = core.getInput("changelog-source") || "file";
+
+    console.log(`Using changelog source: ${changelogSource}`);
+
+    switch (changelogSource.toLowerCase()) {
+        case "file":
+            await handleFileSource();
+            break;
+        case "github":
+            await handleGitHubSource();
+            break;
+        default:
+            core.setFailed(`Unsupported changelog source: ${changelogSource}. Supported values are: 'file', 'github'`);
+    }
+}
+
+module.exports = { main };
+
+if (require.main === require.cache[eval('__filename')]) {
+    main().catch(error => {
+        core.setFailed(error.message);
+    });
+}
+
+
+/***/ }),
+
+/***/ 1523:
+/***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
+
+const axios = __nccwpck_require__(8757);
+
+function plural(word, count) {
+    return count > 1 ? `${word}s` : word;
+}
+
+const JIRA_TICKET_PATTERN = /(?<jiraTicket>[A-Z]{2,}-\d+)/g;
+
+function formatJiraTicket(message, jiraHost) {
+    if (!jiraHost) {
+        return message;
+    }
+
+    const jiraTicketMatch = JIRA_TICKET_PATTERN.exec(message);
+    if (jiraTicketMatch) {
+        const jiraTicket = jiraTicketMatch.groups.jiraTicket;
+        return message.replace(jiraTicket, `<${jiraHost}/browse/${jiraTicket}|${jiraTicket}>`);
+    }
+    return message;
+}
+
+function truncateItemsList(items, jiraHost, maxLength = 1200) {
+    const formattedItems = items.map(({ component, message, changeUrl, author }) => {
+        const formattedMessage = formatJiraTicket(message, jiraHost);
+        return `- *${component}:* ${formattedMessage} ${author ? `(@${author})` : ""} (<${changeUrl}|View>)`;
+    });
+
+    let currentLength = 0;
+    const truncatedItems = [];
+    let truncated = false;
+
+    for (const item of formattedItems) {
+        if (currentLength + item.length + 1 > maxLength) {
+            // +1 for newline
+            truncated = true;
+            break;
+        }
+        truncatedItems.push(item);
+        currentLength += item.length + 1;
+    }
+
+    const result = truncatedItems.join("\n");
+    if (truncated) {
+        const remaining = items.length - truncatedItems.length;
+        return result + `\n... and ${remaining} more item${remaining > 1 ? "s" : ""}`;
+    }
+
+    return result;
+}
+
+function checkMessageSize(message, maxSize = 2800) {
+    const messageText = JSON.stringify(message);
+    if (messageText.length > maxSize) {
+        // If message is still too long, remove some blocks starting from the end
+        const blocks = [...message.blocks];
+
+        while (blocks.length > 3 && JSON.stringify({ blocks }).length > maxSize) {
+            // Keep header, divider, and main announcement, remove from the end
+            blocks.pop();
+        }
+
+        // Add truncation notice
+        blocks.push({
+            type: "context",
+            elements: [
+                {
+                    type: "mrkdwn",
+                    text: ":warning: _Message truncated due to length limit_"
+                }
+            ]
+        });
+
+        return { blocks };
+    }
+
+    return message;
+}
+
+function buildSlackMessage(appName, environment, releases, shortStats, jiraHost) {
+    const bugfixes = releases.reduce((acc, release) => [...acc, ...release.bugfixes], []).sort((a, b) => a.component.localeCompare(b.component));
+    const features = releases.reduce((acc, release) => [...acc, ...release.features], []).sort((a, b) => a.component.localeCompare(b.component));
+
+    const message = {
+        blocks: [
+            {
+                type: "header",
+                text: {
+                    type: "plain_text",
+                    text: `${environment ? `${environment} | ` : ""}${appName}`,
+                    emoji: true
+                }
+            },
+            {
+                type: "divider"
+            },
+            {
+                type: "section",
+                text: {
+                    type: "mrkdwn",
+                    text: `:mega: *New release! ${plural("Version", releases.length)} included:*`
+                }
+            },
+            ...releases.map(({ releaseUrl, version, releaseDate }) => ({
+                type: "context",
+                elements: [
+                    {
+                        text: `*${version}*  |  ${releaseDate} (<${releaseUrl}|View>)`,
+                        type: "mrkdwn"
+                    }
+                ]
+            }))
+        ]
+    };
+
+    if (features.length > 0) {
+        message.blocks.push({
+            type: "divider"
+        });
+        message.blocks.push({
+            type: "section",
+            text: {
+                type: "mrkdwn",
+                text: `*:sparkles: ${features.length} ${plural("Feature", features.length)}*`
+            }
+        });
+        message.blocks.push({
+            type: "section",
+            text: {
+                type: "mrkdwn",
+                text: truncateItemsList(features, jiraHost)
+            }
+        });
+    }
+
+    if (bugfixes.length > 0) {
+        message.blocks.push({
+            type: "divider"
+        });
+        message.blocks.push({
+            type: "section",
+            text: {
+                type: "mrkdwn",
+                text: `*:bug: ${bugfixes.length} ${plural("Bugfixe", bugfixes.length)}*`
+            }
+        });
+        message.blocks.push({
+            type: "section",
+            text: {
+                type: "mrkdwn",
+                text: truncateItemsList(bugfixes, jiraHost)
+            }
+        });
+    }
+
+    if (features.length === 0 && bugfixes.length === 0) {
+        message.blocks.push({
+            type: "section",
+            text: {
+                type: "mrkdwn",
+                text: `*No changes found :man-shrugging:*`
+            }
+        });
+    }
+
+    if (shortStats) {
+        const { fileChanged, insertions, deletions } = shortStats;
+        message.blocks.push({
+            type: "divider"
+        });
+        message.blocks.push({
+            type: "context",
+            elements: [
+                {
+                    text: `:page_facing_up: ${fileChanged} ${plural("file", fileChanged)} changed | :heavy_plus_sign: ${insertions} :heavy_minus_sign: ${deletions} ${plural("line", parseInt(insertions) + parseInt(deletions))}`,
+                    type: "mrkdwn"
+                }
+            ]
+        });
+    }
+
+    return checkMessageSize(message);
+}
+
+function addJiraTicketInfo(changeItem, message) {
+    const jiraTicketMatch = JIRA_TICKET_PATTERN.exec(message);
+    if (jiraTicketMatch) {
+        changeItem.jiraTicket = jiraTicketMatch.groups.jiraTicket;
+    }
+    return changeItem;
+}
+
+async function postReleaseToSlack(hookURL, appName, environment, releases, shortStats, jiraHost) {
+    const message = buildSlackMessage(appName, environment, releases, shortStats, jiraHost);
+
+    try {
+        await axios({
+            method: "post",
+            url: hookURL,
+            data: message
+        });
+    } catch (error) {
+        throw new Error(`Failed to post to Slack: ${error.message}`);
+    }
+}
+
+module.exports = {
+    plural,
+    JIRA_TICKET_PATTERN,
+    formatJiraTicket,
+    truncateItemsList,
+    checkMessageSize,
+    buildSlackMessage,
+    postReleaseToSlack,
+    addJiraTicketInfo
+};
+
+
+/***/ }),
+
 /***/ 9975:
 /***/ ((module) => {
 
@@ -9359,253 +9942,12 @@ module.exports = JSON.parse('{"application/1d-interleaved-parityfec":{"source":"
 /******/ 	if (typeof __nccwpck_require__ !== 'undefined') __nccwpck_require__.ab = __dirname + "/";
 /******/ 	
 /************************************************************************/
-var __webpack_exports__ = {};
-// This entry need to be wrapped in an IIFE because it need to be isolated against other modules in the chunk.
-(() => {
-const core = __nccwpck_require__(2186);
-const { execSync } = __nccwpck_require__(2081);
-const axios = __nccwpck_require__(8757);
-
-const SLACK_WEBHOOK_URL = core.getInput("slack-webhook");
-const APP_NAME = core.getInput("app-name") || "Unknown application";
-const CHANGELOG_FILE = core.getInput("changelog-file") || "CHANGELOG.md";
-const ENVIRONMENT = core.getInput("environment");
-const JIRA_HOST = core.getInput("jira-host") || "";
-
-function getShortStats(fromTag, toTag) {
-    const output = execSync(`git diff --shortstat ${fromTag}...${toTag}`).toString();
-    console.log(`ShortStat: ${output}`);
-    const shortStatPattern = /(?<fileChanged>\d+) files? changed, (?<insertions>\d+) insertions\(\+\), (?<deletions>\d+)/;
-    const statMatch = shortStatPattern.exec(output);
-    if (statMatch) {
-        return {
-            fileChanged: statMatch.groups.fileChanged,
-            insertions: statMatch.groups.insertions,
-            deletions: statMatch.groups.deletions,
-        };
-    }
-    return null;
-}
-function getChangelogDiff(filePath) {
-    const output = execSync(`git diff HEAD~1 HEAD -- ${filePath}`).toString();
-    const newLines = output
-        .split("\n")
-        .filter((line) => line.startsWith("+"))
-        .map((line) => line.substring(1));
-    return newLines.join("\n");
-}
-
-function parseChangelogReleases(changeLogContent) {
-    const lines = changeLogContent.split("\n");
-    // All releases data
-    const releases = [];
-    // Current release data
-    let features = [];
-    let bugfixes = [];
-    let version = null;
-    let releaseUrl = null;
-    let releaseDate = null;
-    let changeType = null;
-
-    const flushRelease = () => {
-        if (!version) {
-            return;
-        }
-        // Extract version tags from url
-        const [previousVersionTag, versionTag] = releaseUrl.split("/").pop().split("...");
-        releases.push({
-            previousVersionTag,
-            versionTag,
-            version,
-            releaseUrl,
-            releaseDate,
-            features,
-            bugfixes,
-        });
-        features = [];
-        bugfixes = [];
-        version = null;
-        releaseUrl = null;
-        releaseDate = null;
-        changeType = null;
-    };
-
-    for (const line of lines) {
-        const releaseStartPattern = /###? \[(?<version>\d+\.\d+\.\d+)\]\((?<releaseUrl>https:\/\/[\w\./-]+)\) \((?<releaseDate>\d{4}-\d{2}-\d{2})\)/;
-        const releaseStartMatch = releaseStartPattern.exec(line);
-        if (releaseStartMatch) {
-            flushRelease();
-            version = releaseStartMatch.groups.version;
-            releaseUrl = releaseStartMatch.groups.releaseUrl;
-            releaseDate = releaseStartMatch.groups.releaseDate;
-        } else if (line.startsWith("### Features")) {
-            changeType = "features";
-        } else if (line.startsWith("### Bug Fixes")) {
-            changeType = "bugfixes";
-        } else if (line.startsWith("* ")) {
-            const changePattern = /\* (\**)?(?<component>[\w-]+)?(:\*\* )?(?<message>.+)\(\[\w{7}\]\((?<changeUrl>https:\/\/[\w\./-]+)\)\)/;
-            const changeMatch = changePattern.exec(line);
-            let changeList = changeType === "features" ? features : changeType === "bugfixes" ? bugfixes : null;
-            // Avoid adding the same change info twice (can happen when change is done on multiple commits)
-            if (
-                changeList &&
-                !changeList.some((feature) => feature.component === changeMatch.groups.component && feature.message === changeMatch.groups.message)
-            ) {
-                const JIRA_TIKCET_PATTERN = /(?<jiraTicket>[A-Z]{2,}-\d+)/g;
-                const jiraTicketMatch = JIRA_TIKCET_PATTERN.exec(changeMatch.groups.message);
-                const change = { ...changeMatch.groups };
-                if (jiraTicketMatch) {
-                    change.jiraTicket = jiraTicketMatch.groups.jiraTicket;
-                }
-                changeList.push(change);
-            }
-        }
-    }
-    flushRelease();
-    return releases;
-}
-
-function postReleaseToSlack(hookURL, appName, environment, releases, shortStats) {
-    const isMajorVersion = (version) => version.split(".")[2] !== "0";
-    const plural = (word, count) => (count > 1 ? `${word}s` : word);
-
-    const bugfixes = releases.reduce((acc, release) => [...acc, ...release.bugfixes], []).sort((a, b) => a.component.localeCompare(b.component));
-    const features = releases.reduce((acc, release) => [...acc, ...release.features], []).sort((a, b) => a.component.localeCompare(b.component));
-
-    const message = {
-        blocks: [
-            {
-                type: "header",
-                text: {
-                    type: "plain_text",
-                    text: `${environment ? `${environment} | ` : ""}${appName}`,
-                    emoji: true,
-                },
-            },
-            {
-                type: "divider",
-            },
-            {
-                type: "section",
-                text: {
-                    type: "mrkdwn",
-                    text: `:mega: *New release! ${plural("Version", releases.length)} included:*`,
-                },
-            },
-            ...releases.map(({ releaseUrl, version, releaseDate }) => ({
-                type: "context",
-                elements: [
-                    {
-                        text: `*${isMajorVersion(version) ? "Major" : "Minor"} version ${version}*  |  ${releaseDate} (<${releaseUrl}|view changes>)`,
-                        type: "mrkdwn",
-                    },
-                ],
-            })),
-        ],
-    };
-    if (features.length > 0) {
-        message.blocks.push({
-            type: "divider",
-        });
-        message.blocks.push({
-            type: "section",
-            text: {
-                type: "mrkdwn",
-                text: `*:sparkles: ${features.length} ${plural("Feature", features.length)}*`,
-            },
-        });
-        message.blocks.push({
-            type: "section",
-            text: {
-                type: "mrkdwn",
-                text: features
-                    .map(({ component, message, changeUrl, jiraTicket }) => {
-                        const formattedMessage = jiraTicket ? message.replace(jiraTicket, `<${JIRA_HOST}/browse/${jiraTicket}|${jiraTicket}>`) : message;
-                        return `- *${component}:* ${formattedMessage} (<${changeUrl}|view changes>)`;
-                    })
-                    .join("\n"),
-            },
-        });
-    }
-    if (bugfixes.length > 0) {
-        message.blocks.push({
-            type: "divider",
-        });
-        message.blocks.push({
-            type: "section",
-            text: {
-                type: "mrkdwn",
-                text: `*:bug: ${bugfixes.length} ${plural("Bugfixe", bugfixes.length)}*`,
-            },
-        });
-        message.blocks.push({
-            type: "section",
-            text: {
-                type: "mrkdwn",
-                text: bugfixes
-                    .map(({ component, message, changeUrl, jiraTicket }) => {
-                        const formattedMessage = jiraTicket ? message.replace(jiraTicket, `<${JIRA_HOST}/browse/${jiraTicket}|${jiraTicket}>`) : message;
-                        return `- *${component}:* ${formattedMessage} (<${changeUrl}|View change>)`;
-                    })
-                    .join("\n"),
-            },
-        });
-    }
-    if (features.length === 0 && bugfixes.length === 0) {
-        message.blocks.push({
-            type: "section",
-            text: {
-                type: "mrkdwn",
-                text: `*No changes found :man-shrugging:*`,
-            },
-        });
-    }
-
-    if (shortStats) {
-        const { fileChanged, insertions, deletions } = shortStats;
-        message.blocks.push({
-            type: "divider",
-        });
-        message.blocks.push({
-            type: "context",
-            elements: [
-                {
-                    text: `:page_facing_up: ${fileChanged} ${plural("file", fileChanged)} changed | :heavy_plus_sign: ${insertions} :heavy_minus_sign: ${deletions} ${plural("line", insertions + deletions)}`,
-                    type: "mrkdwn",
-                },
-            ],
-        });
-    }
-    (async () => {
-        axios({
-            method: "post",
-            url: hookURL,
-            data: message,
-        });
-    })();
-}
-
-try {
-    console.log(`Fetching changes for file '${CHANGELOG_FILE}'...`);
-    const changelogAddedContent = getChangelogDiff(CHANGELOG_FILE);
-    console.log("Parsing latest release...");
-    const releases = parseChangelogReleases(changelogAddedContent);
-    if (releases.length) {
-        const fromTag = releases[releases.length - 1].previousVersionTag;
-        const toTag = releases[0].versionTag;
-        console.log(`Fetching git shortstats for tags: fromTag=${fromTag}, toTag=${toTag}...`);
-        const shortStats = getShortStats(fromTag, toTag);
-        console.log("Posting to Slack latest release info...");
-        postReleaseToSlack(SLACK_WEBHOOK_URL, APP_NAME, ENVIRONMENT, releases, shortStats);
-    } else {
-        core.setFailed("No release found in changelog file");
-    }
-} catch (error) {
-    core.setFailed(error.message);
-}
-
-})();
-
-module.exports = __webpack_exports__;
+/******/ 	
+/******/ 	// startup
+/******/ 	// Load entry module and return exports
+/******/ 	// This entry module is referenced by other modules so it can't be inlined
+/******/ 	var __webpack_exports__ = __nccwpck_require__(4351);
+/******/ 	module.exports = __webpack_exports__;
+/******/ 	
 /******/ })()
 ;

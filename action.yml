@@ -28,5 +28,5 @@ inputs:
         description: "GitHub token for accessing release information (required when changelog-source is 'github')"
         required: false
 runs:
-    using: "node22"
+    using: "node24"
     main: "dist/index.js"
