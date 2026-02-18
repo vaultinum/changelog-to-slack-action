@@ -78,14 +78,23 @@ async function getReleasesBetweenVersions() {
             throw new Error(`Release with tag ${previousVersion} not found`);
         }
 
-        const releasesBetween = allReleases.slice(newVersionIndex, previousVersionIndex);
+        // Detect rollback scenario
+        const isRollback = newVersionIndex > previousVersionIndex;
+        let releasesBetween;
+
+        if (isRollback) {
+            releasesBetween = allReleases.slice(previousVersionIndex + 1, newVersionIndex + 1);
+            console.log(`Detected rollback: rolling back ${releasesBetween.length} release(s) from ${newVersion} to ${previousVersion}`);
+        } else {
+            releasesBetween = allReleases.slice(newVersionIndex, previousVersionIndex);
+            console.log(`Found ${releasesBetween.length} release(s) between ${previousVersion} and ${newVersion}`);
+        }
 
         if (releasesBetween.length === 0) {
             throw new Error(`No releases found between ${previousVersion} and ${newVersion}`);
         }
 
-        console.log(`Found ${releasesBetween.length} release(s) between ${previousVersion} and ${newVersion}`);
-        return releasesBetween;
+        return { releases: releasesBetween, isRollback };
     } catch (error) {
         if (error.response && error.response.status === 404) {
             throw new Error("Repository not found or no releases available");
@@ -173,14 +182,14 @@ async function handleGitHubSource() {
     const JIRA_HOST = core.getInput("jira-host") || "";
 
     try {
-        const releases = await getReleasesBetweenVersions();
+        const { releases, isRollback } = await getReleasesBetweenVersions();
         console.log(`Found ${releases.length} release(s): ${releases.map(r => r.tag_name).join(", ")}`);
 
         console.log("Parsing GitHub releases...");
         const parsedReleases = await parseGitHubReleases(releases);
 
         console.log("Posting to Slack release info...");
-        await postReleaseToSlack(SLACK_WEBHOOK_URL, APP_NAME, ENVIRONMENT, parsedReleases, null, JIRA_HOST);
+        await postReleaseToSlack(SLACK_WEBHOOK_URL, APP_NAME, ENVIRONMENT, parsedReleases, null, JIRA_HOST, isRollback);
     } catch (error) {
         core.setFailed(error.message);
     }

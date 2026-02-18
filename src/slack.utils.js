@@ -76,7 +76,7 @@ function checkMessageSize(message, maxSize = 2800) {
     return message;
 }
 
-function buildSlackMessage(appName, environment, releases, shortStats, jiraHost) {
+function buildSlackMessage(appName, environment, releases, shortStats, jiraHost, isRollback = false) {
     const bugfixes = releases.reduce((acc, release) => [...acc, ...release.bugfixes], []).sort((a, b) => a.component.localeCompare(b.component));
     const features = releases.reduce((acc, release) => [...acc, ...release.features], []).sort((a, b) => a.component.localeCompare(b.component));
 
@@ -97,7 +97,9 @@ function buildSlackMessage(appName, environment, releases, shortStats, jiraHost)
                 type: "section",
                 text: {
                     type: "mrkdwn",
-                    text: `:mega: *New release! ${plural("Version", releases.length)} included:*`
+                    text: isRollback
+                        ? `:warning: *Rollback! ${plural("Version", releases.length)} rolled back:*`
+                        : `:mega: *New release! ${plural("Version", releases.length)} included:*`
                 }
             },
             ...releases.map(({ releaseUrl, version, releaseDate }) => ({
@@ -112,6 +114,18 @@ function buildSlackMessage(appName, environment, releases, shortStats, jiraHost)
         ]
     };
 
+    if (isRollback) {
+        message.blocks.push({
+            type: "context",
+            elements: [
+                {
+                    type: "mrkdwn",
+                    text: ":rewind: _These changes have been rolled back and are no longer active_"
+                }
+            ]
+        });
+    }
+
     if (features.length > 0) {
         message.blocks.push({
             type: "divider"
@@ -120,7 +134,7 @@ function buildSlackMessage(appName, environment, releases, shortStats, jiraHost)
             type: "section",
             text: {
                 type: "mrkdwn",
-                text: `*:sparkles: ${features.length} ${plural("Feature", features.length)}*`
+                text: `*${isRollback ? ":x: Rolled back" : ":sparkles:"} ${features.length} ${plural("Feature", features.length)}*`
             }
         });
         message.blocks.push({
@@ -140,7 +154,7 @@ function buildSlackMessage(appName, environment, releases, shortStats, jiraHost)
             type: "section",
             text: {
                 type: "mrkdwn",
-                text: `*:bug: ${bugfixes.length} ${plural("Bugfixe", bugfixes.length)}*`
+                text: `*${isRollback ? ":x: Rolled back" : ":bug:"} ${bugfixes.length} ${plural("Bugfixe", bugfixes.length)}*`
             }
         });
         message.blocks.push({
@@ -189,8 +203,8 @@ function addJiraTicketInfo(changeItem, message) {
     return changeItem;
 }
 
-async function postReleaseToSlack(hookURL, appName, environment, releases, shortStats, jiraHost) {
-    const message = buildSlackMessage(appName, environment, releases, shortStats, jiraHost);
+async function postReleaseToSlack(hookURL, appName, environment, releases, shortStats, jiraHost, isRollback = false) {
+    const message = buildSlackMessage(appName, environment, releases, shortStats, jiraHost, isRollback);
 
     try {
         await axios({
