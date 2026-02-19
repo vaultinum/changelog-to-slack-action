@@ -154,7 +154,7 @@ function buildSlackMessage(appName, environment, releases, shortStats, jiraHost,
             type: "section",
             text: {
                 type: "mrkdwn",
-                text: `*${isRollback ? ":x: Rolled back" : ":bug:"} ${bugfixes.length} ${plural("Bugfixe", bugfixes.length)}*`
+                text: `*${isRollback ? ":x: Rolled back" : ":bug:"} ${bugfixes.length} ${bugfixes.length > 1 ? "Bugfixes" : "Bugfix"}*`
             }
         });
         message.blocks.push({

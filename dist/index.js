@@ -5191,14 +5191,23 @@ async function getReleasesBetweenVersions() {
             throw new Error(`Release with tag ${previousVersion} not found`);
         }
 
-        const releasesBetween = allReleases.slice(newVersionIndex, previousVersionIndex);
+        // Detect rollback scenario
+        const isRollback = newVersionIndex > previousVersionIndex;
+        let releasesBetween;
+
+        if (isRollback) {
+            releasesBetween = allReleases.slice(previousVersionIndex + 1, newVersionIndex + 1);
+            console.log(`Detected rollback: rolling back ${releasesBetween.length} release(s) from ${newVersion} to ${previousVersion}`);
+        } else {
+            releasesBetween = allReleases.slice(newVersionIndex, previousVersionIndex);
+            console.log(`Found ${releasesBetween.length} release(s) between ${previousVersion} and ${newVersion}`);
+        }
 
         if (releasesBetween.length === 0) {
             throw new Error(`No releases found between ${previousVersion} and ${newVersion}`);
         }
 
-        console.log(`Found ${releasesBetween.length} release(s) between ${previousVersion} and ${newVersion}`);
-        return releasesBetween;
+        return { releases: releasesBetween, isRollback };
     } catch (error) {
         if (error.response && error.response.status === 404) {
             throw new Error("Repository not found or no releases available");
@@ -5286,15 +5295,14 @@ async function handleGitHubSource() {
     const JIRA_HOST = core.getInput("jira-host") || "";
 
     try {
-        console.log(`Fetching GitHub releases between ${process.env.PREVIOUS_VERSION} and ${process.env.NEW_VERSION}...`);
-        const releases = await getReleasesBetweenVersions();
+        const { releases, isRollback } = await getReleasesBetweenVersions();
         console.log(`Found ${releases.length} release(s): ${releases.map(r => r.tag_name).join(", ")}`);
 
         console.log("Parsing GitHub releases...");
         const parsedReleases = await parseGitHubReleases(releases);
 
         console.log("Posting to Slack release info...");
-        await postReleaseToSlack(SLACK_WEBHOOK_URL, APP_NAME, ENVIRONMENT, parsedReleases, null, JIRA_HOST);
+        await postReleaseToSlack(SLACK_WEBHOOK_URL, APP_NAME, ENVIRONMENT, parsedReleases, null, JIRA_HOST, isRollback);
     } catch (error) {
         core.setFailed(error.message);
     }
@@ -5421,7 +5429,7 @@ function checkMessageSize(message, maxSize = 2800) {
     return message;
 }
 
-function buildSlackMessage(appName, environment, releases, shortStats, jiraHost) {
+function buildSlackMessage(appName, environment, releases, shortStats, jiraHost, isRollback = false) {
     const bugfixes = releases.reduce((acc, release) => [...acc, ...release.bugfixes], []).sort((a, b) => a.component.localeCompare(b.component));
     const features = releases.reduce((acc, release) => [...acc, ...release.features], []).sort((a, b) => a.component.localeCompare(b.component));
 
@@ -5442,7 +5450,9 @@ function buildSlackMessage(appName, environment, releases, shortStats, jiraHost)
                 type: "section",
                 text: {
                     type: "mrkdwn",
-                    text: `:mega: *New release! ${plural("Version", releases.length)} included:*`
+                    text: isRollback
+                        ? `:warning: *Rollback! ${plural("Version", releases.length)} rolled back:*`
+                        : `:mega: *New release! ${plural("Version", releases.length)} included:*`
                 }
             },
             ...releases.map(({ releaseUrl, version, releaseDate }) => ({
@@ -5457,6 +5467,18 @@ function buildSlackMessage(appName, environment, releases, shortStats, jiraHost)
         ]
     };
 
+    if (isRollback) {
+        message.blocks.push({
+            type: "context",
+            elements: [
+                {
+                    type: "mrkdwn",
+                    text: ":rewind: _These changes have been rolled back and are no longer active_"
+                }
+            ]
+        });
+    }
+
     if (features.length > 0) {
         message.blocks.push({
             type: "divider"
@@ -5465,7 +5487,7 @@ function buildSlackMessage(appName, environment, releases, shortStats, jiraHost)
             type: "section",
             text: {
                 type: "mrkdwn",
-                text: `*:sparkles: ${features.length} ${plural("Feature", features.length)}*`
+                text: `*${isRollback ? ":x: Rolled back" : ":sparkles:"} ${features.length} ${plural("Feature", features.length)}*`
             }
         });
         message.blocks.push({
@@ -5485,7 +5507,7 @@ function buildSlackMessage(appName, environment, releases, shortStats, jiraHost)
             type: "section",
             text: {
                 type: "mrkdwn",
-                text: `*:bug: ${bugfixes.length} ${plural("Bugfixe", bugfixes.length)}*`
+                text: `*${isRollback ? ":x: Rolled back" : ":bug:"} ${bugfixes.length} ${bugfixes.length > 1 ? "Bugfixes" : "Bugfix"}*`
             }
         });
         message.blocks.push({
@@ -5534,8 +5556,8 @@ function addJiraTicketInfo(changeItem, message) {
     return changeItem;
 }
 
-async function postReleaseToSlack(hookURL, appName, environment, releases, shortStats, jiraHost) {
-    const message = buildSlackMessage(appName, environment, releases, shortStats, jiraHost);
+async function postReleaseToSlack(hookURL, appName, environment, releases, shortStats, jiraHost, isRollback = false) {
+    const message = buildSlackMessage(appName, environment, releases, shortStats, jiraHost, isRollback);
 
     try {
         await axios({
