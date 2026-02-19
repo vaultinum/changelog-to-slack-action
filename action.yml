@@ -1,5 +1,5 @@
 name: "CHANGELOG to Slack"
-description: "Post the latest release from your CHANGELOG to a Slack channel"
+description: "Post the latest changelog for your release to a Slack channel"
 inputs:
     slack-webhook:
         description: "Slack webhook url"
@@ -9,10 +9,24 @@ inputs:
         required: true
     changelog-file:
         description: "The file path to your 'changelog' file. Defauls: CHANGELOG.md"
+        default: "CHANGELOG.md"
     environment:
         description: "The environment of the latest deployment. Defaults: -empty-"
     jira-host:
         description: "The jira host used by the application"
+    changelog-source:
+        description: "File or Github release. Defaults: file"
+        required: false
+        default: "file"
+    new-version:
+        description: "The version of the new release. Required when changelog-source is 'github'"
+        required: false
+    previous-version:
+        description: "The version of the previous release. Required when changelog-source is 'github'"
+        required: false
+    github-token:
+        description: "GitHub token for accessing release information (required when changelog-source is 'github')"
+        required: false
 runs:
-    using: "node16"
+    using: "node24"
     main: "dist/index.js"
