@@ -108,7 +108,7 @@ async function parseGitHubReleases(releases) {
 
     for (const release of releases) {
         const version = release.tag_name;
-        const releaseDate = new Date(release.published_at).toISOString().split("T")[0];
+        const releaseDate = new Date(release.published_at);
         const releaseUrl = release.html_url;
         const body = release.body || "";
 
