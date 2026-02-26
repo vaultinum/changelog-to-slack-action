@@ -5221,7 +5221,7 @@ async function parseGitHubReleases(releases) {
 
     for (const release of releases) {
         const version = release.tag_name;
-        const releaseDate = new Date(release.published_at).toISOString().split("T")[0];
+        const releaseDate = new Date(release.published_at);
         const releaseUrl = release.html_url;
         const body = release.body || "";
 
@@ -5373,9 +5373,9 @@ function formatJiraTicket(message, jiraHost) {
 }
 
 function truncateItemsList(items, jiraHost, maxLength = 1200) {
-    const formattedItems = items.map(({ component, message, changeUrl, author }) => {
+    const formattedItems = items.map(({ component, message, changeUrl }) => {
         const formattedMessage = formatJiraTicket(message, jiraHost);
-        return `- *${component}:* ${formattedMessage} ${author ? `(@${author})` : ""} (<${changeUrl}|View>)`;
+        return `- *${component}:* ${formattedMessage} (<${changeUrl}|view>)`;
     });
 
     let currentLength = 0;
@@ -5433,6 +5433,12 @@ function buildSlackMessage(appName, environment, releases, shortStats, jiraHost,
     const bugfixes = releases.reduce((acc, release) => [...acc, ...release.bugfixes], []).sort((a, b) => a.component.localeCompare(b.component));
     const features = releases.reduce((acc, release) => [...acc, ...release.features], []).sort((a, b) => a.component.localeCompare(b.component));
 
+    const sortedReleases = releases.toSorted((a, b) => a.releaseDate - b.releaseDate);
+
+    const oldestRelease = sortedReleases[0];
+    const latestRelease = sortedReleases[sortedReleases.length - 1];
+    const releaseDate = latestRelease.releaseDate.toISOString().split("T")[0];
+
     const message = {
         blocks: [
             {
@@ -5455,15 +5461,18 @@ function buildSlackMessage(appName, environment, releases, shortStats, jiraHost,
                         : `:mega: *New release! ${plural("Version", releases.length)} included:*`
                 }
             },
-            ...releases.map(({ releaseUrl, version, releaseDate }) => ({
+            {
                 type: "context",
                 elements: [
                     {
-                        text: `*${version}*  |  ${releaseDate} (<${releaseUrl}|View>)`,
+                        text:
+                            sortedReleases.length === 1
+                                ? `*${latestRelease.version}*  |  ${releaseDate} (<${latestRelease.releaseUrl}|View>)`
+                                : `${oldestRelease.version} ➜ ${latestRelease.version} | ${releaseDate} (<${latestRelease.releaseUrl}|View>)`,
                         type: "mrkdwn"
                     }
                 ]
-            }))
+            }
         ]
     };
 
