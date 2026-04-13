@@ -1,3 +1,4 @@
+const fs = require("fs");
 const core = require("@actions/core");
 const { execSync } = require("child_process");
 const { postReleaseToSlack, addJiraTicketInfo } = require("./slack.utils");
@@ -92,6 +93,16 @@ function parseChangelogReleases(changeLogContent) {
     return releases;
 }
 
+function readChangelogForVersionRange(filePath, newVersion, previousVersion) {
+    const content = fs.readFileSync(filePath, "utf-8");
+    const allReleases = parseChangelogReleases(content);
+    const newV = newVersion.replace(/^v/, "");
+    const prevV = previousVersion.replace(/^v/, "");
+    const start = allReleases.findIndex(r => r.version === newV);
+    const end = allReleases.findIndex(r => r.version === prevV);
+    return allReleases.slice(start === -1 ? 0 : start, end === -1 ? allReleases.length : end);
+}
+
 async function handleFileSource() {
     const SLACK_WEBHOOK_URL = core.getInput("slack-webhook");
     const APP_NAME = core.getInput("app-name") || "Unknown application";
@@ -100,15 +111,29 @@ async function handleFileSource() {
     const JIRA_HOST = core.getInput("jira-host") || "";
 
     try {
-        console.log(`Fetching changes for file '${CHANGELOG_FILE}'...`);
-        const changelogAddedContent = getChangelogDiff(CHANGELOG_FILE);
-        console.log("Parsing latest release...");
-        const releases = parseChangelogReleases(changelogAddedContent);
+        const newVersion = core.getInput("new-version");
+        const previousVersion = core.getInput("previous-version");
+
+        let releases;
+        let shortStats = null;
+
+        if (newVersion && previousVersion) {
+            console.log(`Parsing CHANGELOG for version range: ${previousVersion} → ${newVersion}`);
+            releases = readChangelogForVersionRange(CHANGELOG_FILE, newVersion, previousVersion);
+        } else {
+            console.log(`Fetching changes for file '${CHANGELOG_FILE}'...`);
+            const changelogAddedContent = getChangelogDiff(CHANGELOG_FILE);
+            console.log("Parsing latest release...");
+            releases = parseChangelogReleases(changelogAddedContent);
+            if (releases.length) {
+                const fromTag = releases[releases.length - 1].previousVersionTag;
+                const toTag = releases[0].versionTag;
+                console.log(`Fetching git shortstats for tags: fromTag=${fromTag}, toTag=${toTag}...`);
+                shortStats = getShortStats(fromTag, toTag);
+            }
+        }
+
         if (releases.length) {
-            const fromTag = releases[releases.length - 1].previousVersionTag;
-            const toTag = releases[0].versionTag;
-            console.log(`Fetching git shortstats for tags: fromTag=${fromTag}, toTag=${toTag}...`);
-            const shortStats = getShortStats(fromTag, toTag);
             console.log("Posting to Slack latest release info...");
             await postReleaseToSlack(SLACK_WEBHOOK_URL, APP_NAME, ENVIRONMENT, releases, shortStats, JIRA_HOST);
         } else {
@@ -119,4 +144,4 @@ async function handleFileSource() {
     }
 }
 
-module.exports = { handleFileSource };
+module.exports = { handleFileSource, parseChangelogReleases, readChangelogForVersionRange };

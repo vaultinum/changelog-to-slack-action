@@ -5,7 +5,8 @@
     "main": "src/index.js",
     "scripts": {
         "build": "ncc build src/index.js -o dist",
-        "test:github": "node --env-file=.env test/run-tests.js github"
+        "test:github": "node --env-file=.env test/run-tests.js github",
+        "test:file": "node --env-file=.env test/run-tests.js file"
     },
     "author": "Vaultinum",
     "license": "Proprietary",

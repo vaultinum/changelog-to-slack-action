@@ -4982,6 +4982,7 @@ exports["default"] = _default;
 /***/ 755:
 /***/ ((module, __unused_webpack_exports, __nccwpck_require__) => {
 
+const fs = __nccwpck_require__(7147);
 const core = __nccwpck_require__(2186);
 const { execSync } = __nccwpck_require__(2081);
 const { postReleaseToSlack, addJiraTicketInfo } = __nccwpck_require__(1523);
@@ -5076,6 +5077,16 @@ function parseChangelogReleases(changeLogContent) {
     return releases;
 }
 
+function readChangelogForVersionRange(filePath, newVersion, previousVersion) {
+    const content = fs.readFileSync(filePath, "utf-8");
+    const allReleases = parseChangelogReleases(content);
+    const newV = newVersion.replace(/^v/, "");
+    const prevV = previousVersion.replace(/^v/, "");
+    const start = allReleases.findIndex(r => r.version === newV);
+    const end = allReleases.findIndex(r => r.version === prevV);
+    return allReleases.slice(start === -1 ? 0 : start, end === -1 ? allReleases.length : end);
+}
+
 async function handleFileSource() {
     const SLACK_WEBHOOK_URL = core.getInput("slack-webhook");
     const APP_NAME = core.getInput("app-name") || "Unknown application";
@@ -5084,15 +5095,29 @@ async function handleFileSource() {
     const JIRA_HOST = core.getInput("jira-host") || "";
 
     try {
-        console.log(`Fetching changes for file '${CHANGELOG_FILE}'...`);
-        const changelogAddedContent = getChangelogDiff(CHANGELOG_FILE);
-        console.log("Parsing latest release...");
-        const releases = parseChangelogReleases(changelogAddedContent);
+        const newVersion = core.getInput("new-version");
+        const previousVersion = core.getInput("previous-version");
+
+        let releases;
+        let shortStats = null;
+
+        if (newVersion && previousVersion) {
+            console.log(`Parsing CHANGELOG for version range: ${previousVersion} → ${newVersion}`);
+            releases = readChangelogForVersionRange(CHANGELOG_FILE, newVersion, previousVersion);
+        } else {
+            console.log(`Fetching changes for file '${CHANGELOG_FILE}'...`);
+            const changelogAddedContent = getChangelogDiff(CHANGELOG_FILE);
+            console.log("Parsing latest release...");
+            releases = parseChangelogReleases(changelogAddedContent);
+            if (releases.length) {
+                const fromTag = releases[releases.length - 1].previousVersionTag;
+                const toTag = releases[0].versionTag;
+                console.log(`Fetching git shortstats for tags: fromTag=${fromTag}, toTag=${toTag}...`);
+                shortStats = getShortStats(fromTag, toTag);
+            }
+        }
+
         if (releases.length) {
-            const fromTag = releases[releases.length - 1].previousVersionTag;
-            const toTag = releases[0].versionTag;
-            console.log(`Fetching git shortstats for tags: fromTag=${fromTag}, toTag=${toTag}...`);
-            const shortStats = getShortStats(fromTag, toTag);
             console.log("Posting to Slack latest release info...");
             await postReleaseToSlack(SLACK_WEBHOOK_URL, APP_NAME, ENVIRONMENT, releases, shortStats, JIRA_HOST);
         } else {
@@ -5103,7 +5128,7 @@ async function handleFileSource() {
     }
 }
 
-module.exports = { handleFileSource };
+module.exports = { handleFileSource, parseChangelogReleases, readChangelogForVersionRange };
 
 
 /***/ }),
@@ -5430,10 +5455,12 @@ function checkMessageSize(message, maxSize = 2800) {
 }
 
 function buildSlackMessage(appName, environment, releases, shortStats, jiraHost, isRollback = false) {
-    const bugfixes = releases.reduce((acc, release) => [...acc, ...release.bugfixes], []).sort((a, b) => a.component.localeCompare(b.component));
-    const features = releases.reduce((acc, release) => [...acc, ...release.features], []).sort((a, b) => a.component.localeCompare(b.component));
+    const bugfixes = releases.reduce((acc, release) => [...acc, ...release.bugfixes], []).sort((a, b) => (a.component ?? "-").localeCompare(b.component));
+    const features = releases.reduce((acc, release) => [...acc, ...release.features], []).sort((a, b) => (a.component ?? "-").localeCompare(b.component));
 
-    const sortedReleases = releases.toSorted((a, b) => a.releaseDate - b.releaseDate);
+    const sortedReleases = releases
+        .map(r => ({ ...r, releaseDate: r.releaseDate instanceof Date ? r.releaseDate : new Date(r.releaseDate) }))
+        .toSorted((a, b) => a.releaseDate - b.releaseDate);
 
     const oldestRelease = sortedReleases[0];
     const latestRelease = sortedReleases[sortedReleases.length - 1];
