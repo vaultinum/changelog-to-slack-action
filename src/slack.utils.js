@@ -77,10 +77,12 @@ function checkMessageSize(message, maxSize = 2800) {
 }
 
 function buildSlackMessage(appName, environment, releases, shortStats, jiraHost, isRollback = false) {
-    const bugfixes = releases.reduce((acc, release) => [...acc, ...release.bugfixes], []).sort((a, b) => a.component.localeCompare(b.component));
-    const features = releases.reduce((acc, release) => [...acc, ...release.features], []).sort((a, b) => a.component.localeCompare(b.component));
+    const bugfixes = releases.reduce((acc, release) => [...acc, ...release.bugfixes], []).sort((a, b) => (a.component ?? "-").localeCompare(b.component));
+    const features = releases.reduce((acc, release) => [...acc, ...release.features], []).sort((a, b) => (a.component ?? "-").localeCompare(b.component));
 
-    const sortedReleases = releases.toSorted((a, b) => a.releaseDate - b.releaseDate);
+    const sortedReleases = releases
+        .map(r => ({ ...r, releaseDate: r.releaseDate instanceof Date ? r.releaseDate : new Date(r.releaseDate) }))
+        .toSorted((a, b) => a.releaseDate - b.releaseDate);
 
     const oldestRelease = sortedReleases[0];
     const latestRelease = sortedReleases[sortedReleases.length - 1];
